@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
 
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
@@ -87,9 +88,12 @@ function App() {
     loadOllamaStatus();
   }, []);
 
-  const handleOpenOllamaWebsite = () => {
-    // Tauri usually allows window.open to open default browser
-    window.open("https://ollama.com", "_blank");
+  const handleOpenOllamaWebsite = async () => {
+    try {
+      await shellOpen("https://ollama.com");
+    } catch (e: any) {
+      setError("Could not open browser. Visit https://ollama.com manually.");
+    }
   };
   const handleStartOllama = async () => {
     try {

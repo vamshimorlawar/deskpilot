@@ -4,6 +4,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::path::Path;
 use walkdir::WalkDir;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -61,17 +62,11 @@ struct OllamaStatus {
 
 #[tauri::command]
 async fn ollama_status() -> Result<OllamaStatus, String> {
-    // 1) Check if ollama binary is installed
-    let installed = Command::new("ollama")
-        .arg("--version")
-        .output()
-        .is_ok();
-
-    // Default: not running, no model
+    let mut installed = false;
     let mut running = false;
     let mut has_model = false;
 
-    // 2) If server responds, mark running and check models
+    // 1) Check if server is responding FIRST
     if let Ok(resp) = reqwest::Client::new()
         .get("http://localhost:11434/api/tags")
         .send()
@@ -88,11 +83,17 @@ async fn ollama_status() -> Result<OllamaStatus, String> {
 
         if let Ok(tags) = resp.json::<TagsResponse>().await {
             running = true;
+            installed = true; // Server responding = definitely installed
             has_model = tags
                 .models
                 .iter()
-                .any(|t| t.name == "llama3.2:3b" || t.name.starts_with("llama3.2:3b"));
+                .any(|t| t.name.starts_with("llama3.2:3b"));
         }
+    }
+
+    // 2) If server not running, check binary exists
+    if !installed {
+        installed = find_ollama_binary().is_some();
     }
 
     Ok(OllamaStatus {
@@ -314,6 +315,52 @@ async fn ask_ollama(prompt: &str) -> Result<OrgPlan, String> {
     }
 
     Err("Could not parse plan JSON from model response".into())
+}
+
+fn find_ollama_binary() -> Option<PathBuf> {
+    // 1) Common macOS locations
+    let candidates = [
+        "/usr/local/bin/ollama",
+        "/opt/homebrew/bin/ollama",
+        "/usr/bin/ollama",
+        "/Applications/Ollama.app/Contents/Resources/ollama",
+        "/Applications/Ollama.app/Contents/MacOS/ollama",
+    ];
+
+    for cand in candidates {
+        let p = Path::new(cand);
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+    }
+
+    // 2) Try HOME paths
+    if let Ok(home) = std::env::var("HOME") {
+        let home_candidates = [
+            format!("{home}/.local/bin/ollama"),
+            format!("{home}/.ollama/ollama"),
+        ];
+        for cand in home_candidates {
+            let p = Path::new(&cand);
+            if p.exists() {
+                return Some(p.to_path_buf());
+            }
+        }
+    }
+
+    // 3) Try from PATH as last resort (works in dev, often fails in production)
+    if let Ok(output) = Command::new("ollama").arg("--version").output() {
+        if output.status.success() {
+            return Some(PathBuf::from("ollama"));
+        }
+    }
+
+    // 4) macOS: check if Ollama.app exists (even if we can't find the CLI binary)
+    if Path::new("/Applications/Ollama.app").exists() {
+        return Some(PathBuf::from("/Applications/Ollama.app"));
+    }
+
+    None
 }
 
 fn execute_plan_internal(
@@ -576,6 +623,7 @@ async fn execute_photo_plan(path: String, plan: OrgPlan) -> Result<OrganizeResul
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())  
         .invoke_handler(tauri::generate_handler![
             plan_folder,
             execute_plan,
